@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 """
 Bot de Telegram - Registro de operaciones USD/ARS
@@ -40,9 +41,11 @@ DB_FILE   = Path(__file__).parent / "operaciones.db"
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
+    level=logging.DEBUG
 )
 log = logging.getLogger(__name__)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("telegram").setLevel(logging.WARNING)
 
 # ─── Regex de operaciones ─────────────────────────────────────────────────────
 OP_RE = re.compile(
@@ -436,27 +439,43 @@ async def cmd_reset(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
+        log.debug("Mensaje sin texto, ignorado.")
         return
-    text = update.message.text
+
+    text   = update.message.text
     sender = update.effective_user.first_name or update.effective_user.username or "?"
+    chat   = update.effective_chat.type  # private / group / supergroup
+
+    log.debug(f"MENSAJE RECIBIDO | chat={chat} | de={sender} | texto={text!r}")
 
     m = OP_RE.search(text)
     if not m:
+        log.debug(f"No matcheó operación en: {text!r}")
         return
+
+    log.debug(f"OPERACIÓN DETECTADA | grupos={m.groups()}")
 
     keyword, amt1, name1, name2, amt2, rate_s = m.groups()
     if amt1:
-        usd        = parse_number(amt1)
+        usd         = parse_number(amt1)
         contraparte = name1.capitalize()
     else:
-        usd        = parse_number(amt2)
+        usd         = parse_number(amt2)
         contraparte = name2.capitalize()
     rate = parse_number(rate_s)
     tipo = "Compra" if keyword.lower() in ("compro", "compra") else "Venta"
 
+    log.info(f"REGISTRANDO | {tipo} | {contraparte} | USD {usd} x {rate}")
     insert_op(sender, tipo, contraparte, usd, rate, text)
+
     msg = posicion_msg(tipo, usd, rate, contraparte)
-    await update.message.reply_text(msg, parse_mode="Markdown")
+    try:
+        await update.message.reply_text(msg, parse_mode="Markdown")
+        log.debug("Respuesta enviada OK")
+    except Exception as e:
+        log.error(f"Error enviando respuesta: {e}")
+        # Intentar sin Markdown por si hay caracteres especiales
+        await update.message.reply_text(msg.replace("*","").replace("`",""))
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
@@ -489,3 +508,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
