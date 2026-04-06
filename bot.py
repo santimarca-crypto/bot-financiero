@@ -1,5 +1,3 @@
-
-#!/usr/bin/env python3
 """
 Bot de Telegram - Registro de operaciones USD/ARS
 ================================================
@@ -10,14 +8,14 @@ Comandos disponibles:
   /excel            → el bot manda el Excel completo al chat
   /borrar ID        → borrar una operación por ID
   /reset            → borrar todo y empezar de cero (pide confirmación)
-
+ 
 Formatos de operación reconocidos (en cualquier mensaje):
   compro Melania 3000 x 1350
   vendo 3000 Raul x 1382
   compra 3.000 carlos a 1.355
   venta jose 5000 x 1390
 """
-
+ 
 import os
 import re
 import sqlite3
@@ -25,7 +23,7 @@ import logging
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
-
+ 
 from telegram import Update
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
@@ -34,11 +32,11 @@ from telegram.ext import (
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
-
+ 
 # ─── Config ──────────────────────────────────────────────────────────────────
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")          # pegá tu token acá o en .env
 DB_FILE   = Path(__file__).parent / "operaciones.db"
-
+ 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.DEBUG
@@ -46,7 +44,7 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)
-
+ 
 # ─── Regex de operaciones ─────────────────────────────────────────────────────
 OP_RE = re.compile(
     r'\b(compro|compra|vendo|venta)\b\s+'
@@ -58,8 +56,8 @@ OP_RE = re.compile(
     r'\s+[xXaA@]\s*([\d][\d.,]*)',
     re.IGNORECASE | re.UNICODE
 )
-
-
+ 
+ 
 def parse_number(s: str) -> float:
     s = s.strip()
     dot, comma = s.count('.'), s.count(',')
@@ -69,15 +67,15 @@ def parse_number(s: str) -> float:
         after = s.split(',')[1]
         return float(s.replace(',', '.')) if len(after) != 3 else float(s.replace(',', ''))
     return float(s.replace('.', '').replace(',', ''))
-
-
+ 
+ 
 # ─── Base de datos ────────────────────────────────────────────────────────────
 def get_db():
     conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row
     return conn
-
-
+ 
+ 
 def init_db():
     with get_db() as db:
         db.execute("""
@@ -104,20 +102,20 @@ def init_db():
         db.execute("INSERT OR IGNORE INTO config VALUES ('usd_inicial', 0)")
         db.execute("INSERT OR IGNORE INTO config VALUES ('ars_inicial', 0)")
         db.commit()
-
-
+ 
+ 
 def get_config(key: str) -> float:
     with get_db() as db:
         row = db.execute("SELECT value FROM config WHERE key=?", (key,)).fetchone()
         return row["value"] if row else 0.0
-
-
+ 
+ 
 def set_config(key: str, value: float):
     with get_db() as db:
         db.execute("INSERT OR REPLACE INTO config VALUES (?,?)", (key, value))
         db.commit()
-
-
+ 
+ 
 def insert_op(remitente, tipo, contraparte, usd, rate, mensaje=""):
     ars = usd * rate
     now = datetime.now()
@@ -130,8 +128,8 @@ def insert_op(remitente, tipo, contraparte, usd, rate, mensaje=""):
         )
         db.commit()
         return cur.lastrowid
-
-
+ 
+ 
 def get_posicion():
     usd_i = get_config("usd_inicial")
     ars_i = get_config("ars_inicial")
@@ -146,36 +144,36 @@ def get_posicion():
             pos_usd -= r["usd"]
             pos_ars += r["ars"]
     return pos_usd, pos_ars
-
-
+ 
+ 
 def get_historial(limit=10):
     with get_db() as db:
         return db.execute(
             "SELECT * FROM operaciones ORDER BY id DESC LIMIT ?", (limit,)
         ).fetchall()
-
-
+ 
+ 
 def delete_op(op_id: int) -> bool:
     with get_db() as db:
         cur = db.execute("DELETE FROM operaciones WHERE id=?", (op_id,))
         db.commit()
         return cur.rowcount > 0
-
-
+ 
+ 
 def reset_all():
     with get_db() as db:
         db.execute("DELETE FROM operaciones")
         db.execute("UPDATE config SET value=0")
         db.commit()
-
-
+ 
+ 
 # ─── Formateo ────────────────────────────────────────────────────────────────
 def fmt_num(n: float, decimals=0) -> str:
     if decimals:
         return f"{n:,.{decimals}f}".replace(",", "X").replace(".", ",").replace("X", ".")
     return f"{n:,.0f}".replace(",", "X").replace("X", ".")
-
-
+ 
+ 
 def posicion_msg(op_tipo=None, op_usd=None, op_rate=None, op_contra=None) -> str:
     pos_usd, pos_ars = get_posicion()
     lines = []
@@ -196,36 +194,36 @@ def posicion_msg(op_tipo=None, op_usd=None, op_rate=None, op_contra=None) -> str
         f"💰  ARS  `{'%+,.0f' % pos_ars}` ({fmt_num(pos_ars)})",
     ]
     return "\n".join(lines)
-
-
+ 
+ 
 # ─── Generador Excel ──────────────────────────────────────────────────────────
 NAVY  = "1F4E79"
 LBLUE = "BDD7EE"
 ALT   = "EBF3FB"
 YELL  = "FFFF00"
-
+ 
 def _tb():
     s = Side(style="thin", color="CCCCCC")
     return Border(left=s, right=s, top=s, bottom=s)
-
+ 
 def build_excel_bytes() -> bytes:
     with get_db() as db:
         ops = db.execute("SELECT * FROM operaciones ORDER BY id").fetchall()
     usd_i = get_config("usd_inicial")
     ars_i = get_config("ars_inicial")
-
+ 
     wb = Workbook()
     ws = wb.active
     ws.title = "Operaciones"
     ws.freeze_panes = "A7"
-
+ 
     # Title
     ws["A1"] = f"REGISTRO USD/ARS  —  generado {datetime.now().strftime('%d/%m/%Y %H:%M')}"
     ws["A1"].font = Font(name="Arial", bold=True, size=13, color=NAVY)
     ws.merge_cells("A1:K1")
     ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
     ws.row_dimensions[1].height = 28
-
+ 
     # Saldo inicial
     ws["A3"] = "SALDO INICIAL"
     ws["A3"].font = Font(name="Arial", bold=True, size=10, color=NAVY)
@@ -240,7 +238,7 @@ def build_excel_bytes() -> bytes:
         c.number_format = "#,##0.00"
         c.border = _tb()
         c.alignment = Alignment(horizontal="center")
-
+ 
     # Headers
     HDR = ["#", "Fecha", "Hora", "Remitente", "Tipo", "Contraparte",
            "USD", "TC", "ARS", "Posición USD", "Posición ARS"]
@@ -253,17 +251,17 @@ def build_excel_bytes() -> bytes:
         cell.alignment = Alignment(horizontal="center", vertical="center")
         cell.border = _tb()
     ws.row_dimensions[HROW].height = 24
-
+ 
     DS = 7
     mid = Alignment(horizontal="center", vertical="center")
     lft = Alignment(horizontal="left", vertical="center")
-
+ 
     for i, op in enumerate(ops):
         row = DS + i
         alt = i % 2 == 0
         rf  = PatternFill("solid", start_color=ALT if alt else "FFFFFF")
         b   = _tb()
-
+ 
         def c(col, val, fmt=None, fnt=None, aln=None):
             cell = ws.cell(row=row, column=col, value=val)
             cell.fill = rf; cell.border = b
@@ -271,36 +269,36 @@ def build_excel_bytes() -> bytes:
             if fnt: cell.font = fnt
             if aln: cell.alignment = aln
             return cell
-
+ 
         c(1,  op["id"],         None,       Font(name="Arial", size=9, color="888888"), mid)
         c(2,  op["fecha"],      None,       Font(name="Arial", size=10), mid)
         c(3,  op["hora"],       None,       Font(name="Arial", size=10), mid)
         c(4,  op["remitente"],  None,       Font(name="Arial", size=10), lft)
-
+ 
         color = "0070C0" if op["tipo"] == "Compra" else "C00000"
         tc = ws.cell(row=row, column=5, value=op["tipo"])
         tc.fill = rf; tc.border = b; tc.alignment = mid
         tc.font = Font(name="Arial", bold=True, size=10, color=color)
-
+ 
         c(6,  op["contraparte"], None,      Font(name="Arial", size=10), lft)
         c(7,  op["usd"],        "#,##0.00", Font(name="Arial", size=10, color="0000FF"), mid)
         c(8,  op["rate"],       "#,##0.00", Font(name="Arial", size=10, color="0000FF"), mid)
         c(9,  f"=G{row}*H{row}","#,##0.00", Font(name="Arial", size=10), mid)
-
+ 
         # Posición USD acumulada
         if row == DS:
             pu = f"=B4+IF(E{row}=\"Compra\",G{row},-G{row})"
         else:
             pu = f"=J{row-1}+IF(E{row}=\"Compra\",G{row},-G{row})"
         c(10, pu, "#,##0.00", Font(name="Arial", size=10, bold=True), mid)
-
+ 
         # Posición ARS acumulada
         if row == DS:
             pa = f"=E4+IF(E{row}=\"Compra\",-I{row},I{row})"
         else:
             pa = f"=K{row-1}+IF(E{row}=\"Compra\",-I{row},I{row})"
         c(11, pa, "#,##0.00", Font(name="Arial", size=10, bold=True), mid)
-
+ 
     # Totals
     if ops:
         tr = DS + len(ops)
@@ -319,16 +317,16 @@ def build_excel_bytes() -> bytes:
             cell = ws.cell(row=tr, column=col)
             cell.value = formula
             cell.number_format = "#,##0.00"
-
+ 
     for col, w in zip(range(1, 12), [5, 12, 9, 20, 10, 16, 13, 13, 16, 15, 16]):
         ws.column_dimensions[get_column_letter(col)].width = w
-
+ 
     buf = BytesIO()
     wb.save(buf)
     buf.seek(0)
     return buf.read()
-
-
+ 
+ 
 # ─── Handlers de Telegram ─────────────────────────────────────────────────────
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -344,12 +342,12 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "  /borrar ID — eliminar operación",
         parse_mode="Markdown"
     )
-
-
+ 
+ 
 async def cmd_posicion(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(posicion_msg(), parse_mode="Markdown")
-
-
+ 
+ 
 async def cmd_historial(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     n = 10
     if ctx.args:
@@ -369,8 +367,8 @@ async def cmd_historial(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"= $ {fmt_num(r['ars'])}"
         )
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
-
-
+ 
+ 
 async def cmd_excel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Generando Excel... ⏳")
     data = build_excel_bytes()
@@ -380,8 +378,8 @@ async def cmd_excel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         filename=fname,
         caption=f"📊 Registro completo — {datetime.now().strftime('%d/%m/%Y %H:%M')}"
     )
-
-
+ 
+ 
 async def cmd_inicio(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if len(ctx.args) < 2:
         await update.message.reply_text("Uso: /inicio USD ARS\nEj: /inicio 5000 500000")
@@ -400,8 +398,8 @@ async def cmd_inicio(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"💰 ARS: {fmt_num(ars)}",
         parse_mode="Markdown"
     )
-
-
+ 
+ 
 async def cmd_borrar(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not ctx.args:
         await update.message.reply_text("Uso: /borrar ID  (ej: /borrar 5)")
@@ -419,10 +417,10 @@ async def cmd_borrar(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
     else:
         await update.message.reply_text(f"❌ No encontré la operación #{op_id}.")
-
-
+ 
+ 
 _reset_pending = set()
-
+ 
 async def cmd_reset(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if uid in _reset_pending:
@@ -435,49 +433,71 @@ async def cmd_reset(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "⚠️ Esto borra TODAS las operaciones.\n"
             "Mandá /reset de nuevo para confirmar."
         )
-
-
+ 
+ 
 async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.text:
-        log.debug("Mensaje sin texto, ignorado.")
-        return
-
-    text   = update.message.text
-    sender = update.effective_user.first_name or update.effective_user.username or "?"
-    chat   = update.effective_chat.type  # private / group / supergroup
-
-    log.debug(f"MENSAJE RECIBIDO | chat={chat} | de={sender} | texto={text!r}")
-
-    m = OP_RE.search(text)
-    if not m:
-        log.debug(f"No matcheó operación en: {text!r}")
-        return
-
-    log.debug(f"OPERACIÓN DETECTADA | grupos={m.groups()}")
-
-    keyword, amt1, name1, name2, amt2, rate_s = m.groups()
-    if amt1:
-        usd         = parse_number(amt1)
-        contraparte = name1.capitalize()
-    else:
-        usd         = parse_number(amt2)
-        contraparte = name2.capitalize()
-    rate = parse_number(rate_s)
-    tipo = "Compra" if keyword.lower() in ("compro", "compra") else "Venta"
-
-    log.info(f"REGISTRANDO | {tipo} | {contraparte} | USD {usd} x {rate}")
-    insert_op(sender, tipo, contraparte, usd, rate, text)
-
-    msg = posicion_msg(tipo, usd, rate, contraparte)
     try:
-        await update.message.reply_text(msg, parse_mode="Markdown")
-        log.debug("Respuesta enviada OK")
+        if not update.message or not update.message.text:
+            return
+ 
+        text   = update.message.text
+        sender = update.effective_user.first_name or update.effective_user.username or "?"
+        chat   = update.effective_chat.type
+ 
+        log.info(f"MENSAJE | chat={chat} | de={sender} | texto={text!r}")
+ 
+        m = OP_RE.search(text)
+        if not m:
+            log.info(f"Sin match de operación en: {text!r}")
+            return
+ 
+        log.info(f"MATCH! grupos={m.groups()}")
+ 
+        keyword, amt1, name1, name2, amt2, rate_s = m.groups()
+        if amt1:
+            usd         = parse_number(amt1)
+            contraparte = name1.capitalize()
+        else:
+            usd         = parse_number(amt2)
+            contraparte = name2.capitalize()
+        rate = parse_number(rate_s)
+        tipo = "Compra" if keyword.lower() in ("compro", "compra") else "Venta"
+ 
+        log.info(f"REGISTRANDO | {tipo} | {contraparte} | USD {usd} x {rate}")
+ 
+        try:
+            insert_op(sender, tipo, contraparte, usd, rate, text)
+            log.info("Guardado en DB OK")
+        except Exception as e:
+            log.error(f"Error guardando en DB: {e}")
+ 
+        pos_usd, pos_ars = get_posicion()
+ 
+        emoji  = "🟢" if tipo == "Compra" else "🔴"
+        s_usd  = "+" if tipo == "Compra" else "-"
+        s_ars  = "-" if tipo == "Compra" else "+"
+        ars_op = usd * rate
+ 
+        respuesta = (
+            f"{emoji} {tipo.upper()} registrada\n"
+            f"👤 {contraparte}  |  USD {fmt_num(usd)} x $ {fmt_num(rate)}\n"
+            f"   {s_usd}USD {fmt_num(usd)}  /  {s_ars}$ {fmt_num(ars_op)}\n\n"
+            f"📊 POSICION DE CAJA\n"
+            f"💵 USD:  {fmt_num(pos_usd)}\n"
+            f"💰 ARS:  {fmt_num(pos_ars)}"
+        )
+ 
+        await update.message.reply_text(respuesta)
+        log.info("Respuesta enviada OK")
+ 
     except Exception as e:
-        log.error(f"Error enviando respuesta: {e}")
-        # Intentar sin Markdown por si hay caracteres especiales
-        await update.message.reply_text(msg.replace("*","").replace("`",""))
-
-
+        log.error(f"ERROR en handle_message: {e}", exc_info=True)
+        try:
+            await update.message.reply_text(f"❌ Error interno: {e}")
+        except:
+            pass
+ 
+ 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 def main():
     if not BOT_TOKEN:
@@ -488,10 +508,10 @@ def main():
         print("  3. Copiá el token y pegalo en el archivo .env:")
         print("       BOT_TOKEN=123456:ABC-tu-token-acá")
         return
-
+ 
     init_db()
     log.info("Iniciando bot...")
-
+ 
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start",    cmd_start))
     app.add_handler(CommandHandler("posicion", cmd_posicion))
@@ -501,11 +521,11 @@ def main():
     app.add_handler(CommandHandler("borrar",   cmd_borrar))
     app.add_handler(CommandHandler("reset",    cmd_reset))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
+ 
     log.info("Bot corriendo. Ctrl+C para detener.")
     app.run_polling(allowed_updates=["message"])
-
-
+ 
+ 
 if __name__ == "__main__":
     main()
 
