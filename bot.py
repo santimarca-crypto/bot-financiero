@@ -1,13 +1,3 @@
-import os, re, sqlite3, logging
-from datetime import datetime
-from io import BytesIO
-from pathlib import Path
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-from openpyxl.utils import get_column_letter
-
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 DB = Path("/tmp/ops.db")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -15,7 +5,8 @@ log = logging.getLogger(__name__)
 
 OP_RE = re.compile(
     r'\b(compro|compra|vendo|venta)\b\s+'
-    r'(?:([\d][\d.,]*)\s+(\w+)|(\w+)\s+([\d][\d.,]*))'
+    r'([\w][\w\s]*?)\s+'
+    r'([\d][\d.,]*)'
     r'\s+[xXaA@]\s*([\d][\d.,]*)',
     re.IGNORECASE
 )
@@ -81,6 +72,7 @@ async def start(u: Update, _):
         "Bot USD/ARS activo\n\n"
         "Manda operaciones asi:\n"
         "compro Melania 3000 x 1350\n"
+        "compro Vicky Kantai 3000 x 1350\n"
         "vendo Raul 5000 x 1382\n\n"
         "/posicion - ver posicion de caja\n"
         "/historial - operaciones de hoy\n"
@@ -220,9 +212,9 @@ async def mensaje(u: Update, ctx):
         if not m:
             log.info("Sin match")
             return
-        kw, a1, n1, n2, a2, tc_s = m.groups()
-        usd_v = num(a1 if a1 else a2)
-        contra = (n1 if n1 else n2).capitalize()
+        kw, contra, usd_s, tc_s = m.groups()
+        usd_v = num(usd_s)
+        contra = contra.strip().title()
         tc_v = num(tc_s)
         tipo = "Compra" if kw.lower() in ("compro","compra") else "Venta"
         guardar(sender, tipo, contra, usd_v, tc_v, text)
