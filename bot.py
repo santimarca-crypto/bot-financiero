@@ -1,4 +1,6 @@
-import os, re, sqlite3, logging
+Error de indentación — cuando editaste en GitHub se corrió el espaciado. Hay que reemplazar el archivo entero de nuevo.
+Andá a GitHub → bot.py → lápiz ✏️ → Cmd+A → borrá todo → pegá esto completo:
+pythonimport os, re, sqlite3, logging
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
@@ -115,13 +117,13 @@ async def hist_cmd(u: Update, ctx):
 
 async def inicio_cmd(u: Update, ctx):
     if len(ctx.args) < 1:
-        await u.message.reply_text("Uso: /inicio ARS\nEj: /inicio 500000")
+        await u.message.reply_text("Uso: /inicio ARS\nEj: /inicio -500000")
         return
     try:
         ars_i = num(ctx.args[0])
         setcfg("ars", ars_i)
-       signo = "-" if ars_i < 0 else ""
-await u.message.reply_text("Saldo inicial en pesos: " + signo + "$" + fmt(ars_i))
+        signo = "-" if ars_i < 0 else ""
+        await u.message.reply_text("Saldo inicial en pesos: " + signo + "$" + fmt(ars_i))
     except Exception as e:
         await u.message.reply_text("Error: " + str(e))
 
