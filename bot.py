@@ -120,7 +120,8 @@ async def inicio_cmd(u: Update, ctx):
     try:
         ars_i = num(ctx.args[0])
         setcfg("ars", ars_i)
-        await u.message.reply_text("Saldo inicial en pesos: $" + fmt(ars_i))
+       signo = "-" if ars_i < 0 else ""
+await u.message.reply_text("Saldo inicial en pesos: " + signo + "$" + fmt(ars_i))
     except Exception as e:
         await u.message.reply_text("Error: " + str(e))
 
