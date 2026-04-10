@@ -9,7 +9,7 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-DB = Path("/tmp/ops.db")
+DB = Path("/data/ops.db")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
