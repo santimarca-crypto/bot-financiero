@@ -1,5 +1,3 @@
-
-
 import os, re, sqlite3, logging
 from datetime import datetime
 from io import BytesIO
@@ -15,12 +13,12 @@ DB = Path("/data/ops.db")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
-# compro/vendo nombre 1300 x 1365
+# compro/vendo nombre 1300 x 1365  (x con o sin espacios)
 OP_RE = re.compile(
     r'\b(compro|compra|vendo|venta)\b\s+'
     r'([\w][\w\s]*?)\s+'
     r'([\d][\d.,]*)'
-    r'\s+[xXaA@]\s*([\d][\d.,]*)',
+    r'\s*[xXaA@]\s*([\d][\d.,]*)',
     re.IGNORECASE
 )
 
@@ -32,9 +30,9 @@ OP_RE2 = re.compile(
     re.IGNORECASE
 )
 
-# salen/entran 500000
+# salen/entran 500000 [nombre opcional]
 MOV_RE = re.compile(
-    r'\b(salen|entran)\b\s+([\d][\d.,]+)',
+    r'\b(salen|entran)\b\s+([\d][\d.,]+)(?:\s+([a-zA-Z][\w\s]*))?',
     re.IGNORECASE
 )
 
@@ -147,7 +145,8 @@ async def hist_cmd(u: Update, ctx):
     txt = "Operaciones de hoy " + hoy + ":\n\n"
     for i, r in enumerate(rows, 1):
         if r["tipo"] in ("Salida", "Entrada"):
-            txt += "#" + str(i) + " " + r["hora"][:5] + " | " + r["tipo"].upper() + " $" + fmt(r["ars"]) + " (ID:" + str(r["id"]) + ")\n"
+            nombre_h = " " + r["contra"] if r["contra"] != "-" else ""
+            txt += "#" + str(i) + " " + r["hora"][:5] + " | " + r["tipo"].upper() + nombre_h + " $" + fmt(r["ars"]) + " (ID:" + str(r["id"]) + ")\n"
         else:
             e = "COMPRA" if r["tipo"]=="Compra" else "VENTA"
             txt += "#" + str(i) + " " + r["hora"][:5] + " | " + e + " " + r["contra"] + " USD " + fmtd(r["usd"]) + " x " + fmt(r["tc"]) + " (ID:" + str(r["id"]) + ")\n"
@@ -294,16 +293,18 @@ async def mensaje(u: Update, ctx):
         # Movimientos de pesos: salen/entran
         mov = MOV_RE.search(text)
         if mov:
-            kw, monto_s = mov.groups()
+            kw, monto_s, nombre_s = mov.groups()
             monto = num(monto_s)
             tipo = "Salida" if kw.lower() == "salen" else "Entrada"
-            guardar(sender, tipo, "-", 0, 0, monto, text)
+            contra = nombre_s.strip().title() if nombre_s else "-"
+            guardar(sender, tipo, contra, 0, 0, monto, text)
             n_hoy = num_op_hoy()
             _, pa = posicion()
             sp = "-" if tipo == "Salida" else "+"
+            nombre_txt = " " + contra if contra != "-" else ""
             resp = (
                 "OK " + tipo.upper() + " #" + str(n_hoy) + "\n"
-                + sp + "$ " + fmt(monto) + "\n\n"
+                + nombre_txt.strip() + (" | " if contra != "-" else "") + sp + "$ " + fmt(monto) + "\n\n"
                 "POSICION DE CAJA\n"
                 "ARS: " + ("+" if pa>=0 else "-") + fmt(pa)
             )
