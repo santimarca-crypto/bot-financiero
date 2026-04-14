@@ -67,6 +67,12 @@ def guardar(de, tipo, contra, usd, tc, msg):
                   (now.strftime("%d/%m/%Y"), now.strftime("%H:%M:%S"), de, tipo, contra, usd, tc, usd*tc, msg))
         c.commit()
 
+def num_op_hoy():
+    hoy = datetime.now().strftime("%d/%m/%Y")
+    with db() as c:
+        r = c.execute("SELECT COUNT(*) FROM ops WHERE fecha=?", (hoy,)).fetchone()
+        return r[0]
+
 def posicion():
     pu, pa = cfg("usd"), cfg("ars")
     with db() as c:
@@ -82,13 +88,15 @@ async def start(u: Update, _):
         "Bot USD/ARS activo\n\n"
         "Manda operaciones asi:\n"
         "compro Melania 3000 x 1350\n"
+        "compro Vicky Kantai 3000 x 1350\n"
         "vendo Raul 5000 x 1382\n\n"
         "/posicion - ver posicion de caja\n"
         "/historial - operaciones de hoy\n"
         "/excel - bajar Excel\n"
         "/inicio ARS - fijar saldo inicial en pesos\n"
         "/corregir ID USD TC - corregir una operacion\n"
-        "/cancelar ID - cancelar una operacion"
+        "/cancelar ID - cancelar una operacion\n"
+        "/resetear - borrar todo y arrancar de cero"
     )
 
 async def pos_cmd(u: Update, _):
@@ -107,14 +115,14 @@ async def hist_cmd(u: Update, ctx):
         await u.message.reply_text("No hay operaciones hoy.")
         return
     txt = "Operaciones de hoy " + hoy + ":\n\n"
-    for r in rows:
+    for i, r in enumerate(rows, 1):
         e = "COMPRA" if r["tipo"]=="Compra" else "VENTA"
-        txt += "#" + str(r["id"]) + " " + r["hora"][:5] + " | " + e + " " + r["contra"] + " USD " + fmt(r["usd"]) + " x " + fmt(r["tc"]) + "\n"
+        txt += "#" + str(i) + " " + r["hora"][:5] + " | " + e + " " + r["contra"] + " USD " + fmt(r["usd"]) + " x " + fmt(r["tc"]) + " (ID:" + str(r["id"]) + ")\n"
     await u.message.reply_text(txt)
 
 async def inicio_cmd(u: Update, ctx):
     if len(ctx.args) < 1:
-        await u.message.reply_text("Uso: /inicio ARS\nEj: /inicio 500000")
+        await u.message.reply_text("Uso: /inicio ARS\nEj: /inicio -500000")
         return
     try:
         ars_i = num(ctx.args[0])
@@ -126,20 +134,20 @@ async def inicio_cmd(u: Update, ctx):
 
 async def cancelar_cmd(u: Update, ctx):
     if not ctx.args:
-        await u.message.reply_text("Uso: /cancelar ID\nEj: /cancelar 5")
+        await u.message.reply_text("Uso: /cancelar ID\nEj: /cancelar 25\n(el ID lo ves en /historial entre parentesis)")
         return
     op_id = ctx.args[0]
     with db() as c:
         r = c.execute("SELECT * FROM ops WHERE id=?", (op_id,)).fetchone()
         if not r:
-            await u.message.reply_text("No existe operacion #" + str(op_id))
+            await u.message.reply_text("No existe operacion con ID " + str(op_id))
             return
         e = "COMPRA" if r["tipo"]=="Compra" else "VENTA"
         c.execute("DELETE FROM ops WHERE id=?", (op_id,))
         c.commit()
     _, pa = posicion()
     await u.message.reply_text(
-        "CANCELADA operacion #" + str(op_id) + "\n"
+        "CANCELADA operacion ID " + str(op_id) + "\n"
         + e + " " + r["contra"] + " USD " + fmt(r["usd"]) + " x " + fmt(r["tc"]) + "\n\n"
         "POSICION DE CAJA\n"
         "ARS: " + ("+" if pa>=0 else "-") + fmt(pa)
@@ -147,7 +155,7 @@ async def cancelar_cmd(u: Update, ctx):
 
 async def corregir_cmd(u: Update, ctx):
     if len(ctx.args) < 3:
-        await u.message.reply_text("Uso: /corregir ID USD TC\nEj: /corregir 5 2000 1380")
+        await u.message.reply_text("Uso: /corregir ID USD TC\nEj: /corregir 25 2000 1380\n(el ID lo ves en /historial entre parentesis)")
         return
     try:
         op_id = int(ctx.args[0])
@@ -157,19 +165,32 @@ async def corregir_cmd(u: Update, ctx):
         with db() as c:
             r = c.execute("SELECT * FROM ops WHERE id=?", (op_id,)).fetchone()
             if not r:
-                await u.message.reply_text("No existe operacion #" + str(op_id))
+                await u.message.reply_text("No existe operacion con ID " + str(op_id))
                 return
             c.execute("UPDATE ops SET usd=?, tc=?, ars=? WHERE id=?", (usd_v, tc_v, ars_v, op_id))
             c.commit()
         _, pa = posicion()
         await u.message.reply_text(
-            "CORREGIDA operacion #" + str(op_id) + "\n"
+            "CORREGIDA operacion ID " + str(op_id) + "\n"
             "USD " + fmt(usd_v) + " x $ " + fmt(tc_v) + "\n\n"
             "POSICION DE CAJA\n"
             "ARS: " + ("+" if pa>=0 else "-") + fmt(pa)
         )
     except Exception as e:
         await u.message.reply_text("Error: " + str(e))
+
+async def resetear_cmd(u: Update, ctx):
+    with db() as c:
+        c.execute("DELETE FROM ops")
+        c.execute("DELETE FROM sqlite_sequence WHERE name='ops'")
+        c.execute("UPDATE cfg SET v=0 WHERE k='ars'")
+        c.commit()
+    await u.message.reply_text(
+        "RESETEO COMPLETO\n"
+        "Todas las operaciones borradas.\n"
+        "Saldo en cero.\n\n"
+        "Ahora usa /inicio para fijar el saldo de apertura."
+    )
 
 async def excel_cmd(u: Update, _):
     await u.message.reply_text("Generando Excel...")
@@ -228,11 +249,12 @@ async def mensaje(u: Update, ctx):
         tc_v = num(tc_s)
         tipo = "Compra" if kw.lower() in ("compro","compra") else "Venta"
         guardar(sender, tipo, contra, usd_v, tc_v, text)
+        n_hoy = num_op_hoy()
         _, pa = posicion()
         sp2 = "-" if tipo == "Compra" else "+"
         ars_op = usd_v * tc_v
         resp = (
-            ("OK COMPRA" if tipo=="Compra" else "OK VENTA") + "\n"
+            ("OK COMPRA" if tipo=="Compra" else "OK VENTA") + " #" + str(n_hoy) + "\n"
             + contra + " | USD " + fmt(usd_v) + " x $ " + fmt(tc_v) + "\n"
             + sp2 + "$ " + fmt(ars_op) + "\n\n"
             "POSICION DE CAJA\n"
@@ -257,6 +279,7 @@ def main():
     app.add_handler(CommandHandler("inicio", inicio_cmd))
     app.add_handler(CommandHandler("cancelar", cancelar_cmd))
     app.add_handler(CommandHandler("corregir", corregir_cmd))
+    app.add_handler(CommandHandler("resetear", resetear_cmd))
     app.add_handler(MessageHandler(filters.ALL, mensaje))
     log.info("Bot iniciado")
     app.run_polling(drop_pending_updates=True)
