@@ -1,3 +1,4 @@
+
 import os, re, sqlite3, logging
 from datetime import datetime
 from io import BytesIO
@@ -43,6 +44,7 @@ def db():
     return conn
 
 def setup():
+    DB.parent.mkdir(parents=True, exist_ok=True)
     with db() as c:
         c.execute("CREATE TABLE IF NOT EXISTS cfg (k TEXT PRIMARY KEY, v REAL DEFAULT 0)")
         c.execute("CREATE TABLE IF NOT EXISTS ops (id INTEGER PRIMARY KEY AUTOINCREMENT, fecha TEXT, hora TEXT, de TEXT, tipo TEXT, contra TEXT, usd REAL, tc REAL, ars REAL, msg TEXT)")
