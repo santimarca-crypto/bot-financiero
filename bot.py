@@ -1,4 +1,5 @@
 
+
 import os, re, sqlite3, logging
 from datetime import datetime
 from io import BytesIO
@@ -14,11 +15,26 @@ DB = Path("/data/ops.db")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
+# compro/vendo nombre 1300 x 1365
 OP_RE = re.compile(
     r'\b(compro|compra|vendo|venta)\b\s+'
     r'([\w][\w\s]*?)\s+'
     r'([\d][\d.,]*)'
     r'\s+[xXaA@]\s*([\d][\d.,]*)',
+    re.IGNORECASE
+)
+
+# compro/vendo [nombre] 1000000/1380  (pesos dividido TC)
+OP_RE2 = re.compile(
+    r'\b(compro|compra|vendo|venta)\b\s+'
+    r'(?:([a-zA-Z][\w ]*?)\s+)?'
+    r'([\d][\d.,]+)\s*/\s*([\d][\d.,]+)',
+    re.IGNORECASE
+)
+
+# salen/entran 500000
+MOV_RE = re.compile(
+    r'\b(salen|entran)\b\s+([\d][\d.,]+)',
     re.IGNORECASE
 )
 
@@ -37,6 +53,9 @@ def num(s):
 
 def fmt(n):
     return "{:,.0f}".format(abs(n)).replace(",",".")
+
+def fmtd(n):
+    return "{:,.2f}".format(abs(n)).replace(",","X").replace(".","!").replace("X",".").replace("!",",")
 
 def db():
     conn = sqlite3.connect(DB)
@@ -62,11 +81,11 @@ def setcfg(k, v):
         c.execute("INSERT OR REPLACE INTO cfg VALUES (?,?)", (k,v))
         c.commit()
 
-def guardar(de, tipo, contra, usd, tc, msg):
+def guardar(de, tipo, contra, usd, tc, ars, msg):
     now = datetime.now()
     with db() as c:
         c.execute("INSERT INTO ops (fecha,hora,de,tipo,contra,usd,tc,ars,msg) VALUES (?,?,?,?,?,?,?,?,?)",
-                  (now.strftime("%d/%m/%Y"), now.strftime("%H:%M:%S"), de, tipo, contra, usd, tc, usd*tc, msg))
+                  (now.strftime("%d/%m/%Y"), now.strftime("%H:%M:%S"), de, tipo, contra, usd, tc, ars, msg))
         c.commit()
 
 def num_op_hoy():
@@ -81,17 +100,26 @@ def posicion():
         for r in c.execute("SELECT tipo,usd,ars FROM ops ORDER BY id").fetchall():
             if r["tipo"] == "Compra":
                 pu += r["usd"]; pa -= r["ars"]
-            else:
+            elif r["tipo"] == "Venta":
                 pu -= r["usd"]; pa += r["ars"]
+            elif r["tipo"] == "Salida":
+                pa -= r["ars"]
+            elif r["tipo"] == "Entrada":
+                pa += r["ars"]
     return pu, pa
 
 async def start(u: Update, _):
     await u.message.reply_text(
         "Bot USD/ARS activo\n\n"
-        "Manda operaciones asi:\n"
-        "compro Melania 3000 x 1350\n"
-        "compro Vicky Kantai 3000 x 1350\n"
-        "vendo Raul 5000 x 1382\n\n"
+        "Operaciones con tipo de cambio:\n"
+        "compro Richard 1300 x 1365\n"
+        "vendo Vicky Kantai 5000 x 1382\n\n"
+        "Operaciones con pesos/TC:\n"
+        "compro 1000000/1380\n"
+        "vendo Richard 900000/1465\n\n"
+        "Movimientos de pesos:\n"
+        "salen 500000\n"
+        "entran 200000\n\n"
         "/posicion - ver posicion de caja\n"
         "/historial - operaciones de hoy\n"
         "/excel - bajar Excel\n"
@@ -118,8 +146,11 @@ async def hist_cmd(u: Update, ctx):
         return
     txt = "Operaciones de hoy " + hoy + ":\n\n"
     for i, r in enumerate(rows, 1):
-        e = "COMPRA" if r["tipo"]=="Compra" else "VENTA"
-        txt += "#" + str(i) + " " + r["hora"][:5] + " | " + e + " " + r["contra"] + " USD " + fmt(r["usd"]) + " x " + fmt(r["tc"]) + " (ID:" + str(r["id"]) + ")\n"
+        if r["tipo"] in ("Salida", "Entrada"):
+            txt += "#" + str(i) + " " + r["hora"][:5] + " | " + r["tipo"].upper() + " $" + fmt(r["ars"]) + " (ID:" + str(r["id"]) + ")\n"
+        else:
+            e = "COMPRA" if r["tipo"]=="Compra" else "VENTA"
+            txt += "#" + str(i) + " " + r["hora"][:5] + " | " + e + " " + r["contra"] + " USD " + fmtd(r["usd"]) + " x " + fmt(r["tc"]) + " (ID:" + str(r["id"]) + ")\n"
     await u.message.reply_text(txt)
 
 async def inicio_cmd(u: Update, ctx):
@@ -144,13 +175,17 @@ async def cancelar_cmd(u: Update, ctx):
         if not r:
             await u.message.reply_text("No existe operacion con ID " + str(op_id))
             return
-        e = "COMPRA" if r["tipo"]=="Compra" else "VENTA"
+        e = r["tipo"].upper()
         c.execute("DELETE FROM ops WHERE id=?", (op_id,))
         c.commit()
     _, pa = posicion()
+    if r["tipo"] in ("Salida", "Entrada"):
+        detalle = e + " $" + fmt(r["ars"])
+    else:
+        detalle = e + " " + r["contra"] + " USD " + fmtd(r["usd"]) + " x " + fmt(r["tc"])
     await u.message.reply_text(
         "CANCELADA operacion ID " + str(op_id) + "\n"
-        + e + " " + r["contra"] + " USD " + fmt(r["usd"]) + " x " + fmt(r["tc"]) + "\n\n"
+        + detalle + "\n\n"
         "POSICION DE CAJA\n"
         "ARS: " + ("+" if pa>=0 else "-") + fmt(pa)
     )
@@ -174,7 +209,7 @@ async def corregir_cmd(u: Update, ctx):
         _, pa = posicion()
         await u.message.reply_text(
             "CORREGIDA operacion ID " + str(op_id) + "\n"
-            "USD " + fmt(usd_v) + " x $ " + fmt(tc_v) + "\n\n"
+            "USD " + fmtd(usd_v) + " x $ " + fmt(tc_v) + "\n\n"
             "POSICION DE CAJA\n"
             "ARS: " + ("+" if pa>=0 else "-") + fmt(pa)
         )
@@ -221,12 +256,26 @@ async def excel_cmd(u: Update, _):
             cell = ws.cell(row=row, column=c2, value=v)
             cell.fill = alt; cell.border = b
             cell.alignment = Alignment(horizontal="center")
-        ws.cell(row=row, column=9, value="=G"+str(row)+"*H"+str(row)).number_format = "#,##0.00"
+        ws.cell(row=row, column=9, value=r["ars"]).number_format = "#,##0.00"
         ws.cell(row=row, column=9).fill = alt; ws.cell(row=row, column=9).border = b
         if row == DS:
-            pa = "="+str(ars_i)+"+IF(E"+str(row)+'="Compra",-I'+str(row)+",I"+str(row)+")"
+            if r["tipo"] == "Compra":
+                pa = "="+str(ars_i)+"-I"+str(row)
+            elif r["tipo"] == "Venta":
+                pa = "="+str(ars_i)+"+I"+str(row)
+            elif r["tipo"] == "Salida":
+                pa = "="+str(ars_i)+"-I"+str(row)
+            else:
+                pa = "="+str(ars_i)+"+I"+str(row)
         else:
-            pa = "=J"+str(row-1)+"+IF(E"+str(row)+'="Compra",-I'+str(row)+",I"+str(row)+")"
+            if r["tipo"] == "Compra":
+                pa = "=J"+str(row-1)+"-I"+str(row)
+            elif r["tipo"] == "Venta":
+                pa = "=J"+str(row-1)+"+I"+str(row)
+            elif r["tipo"] == "Salida":
+                pa = "=J"+str(row-1)+"-I"+str(row)
+            else:
+                pa = "=J"+str(row-1)+"+I"+str(row)
         cell = ws.cell(row=row, column=10, value=pa)
         cell.fill = alt; cell.border = b; cell.number_format = "#,##0.00"
         cell.alignment = Alignment(horizontal="center")
@@ -241,29 +290,75 @@ async def mensaje(u: Update, ctx):
         text = u.message.text
         sender = u.effective_user.first_name or u.effective_user.username or "?"
         log.info("MSG de " + sender + ": " + repr(text))
-        m = OP_RE.search(text)
-        if not m:
-            log.info("Sin match")
+
+        # Movimientos de pesos: salen/entran
+        mov = MOV_RE.search(text)
+        if mov:
+            kw, monto_s = mov.groups()
+            monto = num(monto_s)
+            tipo = "Salida" if kw.lower() == "salen" else "Entrada"
+            guardar(sender, tipo, "-", 0, 0, monto, text)
+            n_hoy = num_op_hoy()
+            _, pa = posicion()
+            sp = "-" if tipo == "Salida" else "+"
+            resp = (
+                "OK " + tipo.upper() + " #" + str(n_hoy) + "\n"
+                + sp + "$ " + fmt(monto) + "\n\n"
+                "POSICION DE CAJA\n"
+                "ARS: " + ("+" if pa>=0 else "-") + fmt(pa)
+            )
+            await u.message.reply_text(resp)
             return
-        kw, contra, usd_s, tc_s = m.groups()
-        usd_v = num(usd_s)
-        contra = contra.strip().title()
-        tc_v = num(tc_s)
-        tipo = "Compra" if kw.lower() in ("compro","compra") else "Venta"
-        guardar(sender, tipo, contra, usd_v, tc_v, text)
-        n_hoy = num_op_hoy()
-        _, pa = posicion()
-        sp2 = "-" if tipo == "Compra" else "+"
-        ars_op = usd_v * tc_v
-        resp = (
-            ("OK COMPRA" if tipo=="Compra" else "OK VENTA") + " #" + str(n_hoy) + "\n"
-            + contra + " | USD " + fmt(usd_v) + " x $ " + fmt(tc_v) + "\n"
-            + sp2 + "$ " + fmt(ars_op) + "\n\n"
-            "POSICION DE CAJA\n"
-            "ARS: " + ("+" if pa>=0 else "-") + fmt(pa)
-        )
-        await u.message.reply_text(resp)
-        log.info("Respuesta enviada")
+
+        # Operacion con pesos/TC
+        m2 = OP_RE2.search(text)
+        if m2 and "/" in text:
+            kw, contra_s, pesos_s, tc_s = m2.groups()
+            pesos = num(pesos_s)
+            tc_v = num(tc_s)
+            usd_v = pesos / tc_v
+            contra = (contra_s.strip().title() if contra_s else "-")
+            tipo = "Compra" if kw.lower() in ("compro","compra") else "Venta"
+            guardar(sender, tipo, contra, usd_v, tc_v, pesos, text)
+            n_hoy = num_op_hoy()
+            _, pa = posicion()
+            sp = "+" if tipo == "Compra" else "-"
+            sp2 = "-" if tipo == "Compra" else "+"
+            resp = (
+                ("OK COMPRA" if tipo=="Compra" else "OK VENTA") + " #" + str(n_hoy) + "\n"
+                + contra + " | USD " + fmtd(usd_v) + " x $ " + fmt(tc_v) + "\n"
+                + sp2 + "$ " + fmt(pesos) + "\n\n"
+                "POSICION DE CAJA\n"
+                "ARS: " + ("+" if pa>=0 else "-") + fmt(pa)
+            )
+            await u.message.reply_text(resp)
+            return
+
+        # Operacion con USD x TC
+        m = OP_RE.search(text)
+        if m:
+            kw, contra, usd_s, tc_s = m.groups()
+            usd_v = num(usd_s)
+            contra = contra.strip().title()
+            tc_v = num(tc_s)
+            tipo = "Compra" if kw.lower() in ("compro","compra") else "Venta"
+            guardar(sender, tipo, contra, usd_v, tc_v, usd_v*tc_v, text)
+            n_hoy = num_op_hoy()
+            _, pa = posicion()
+            sp2 = "-" if tipo == "Compra" else "+"
+            ars_op = usd_v * tc_v
+            resp = (
+                ("OK COMPRA" if tipo=="Compra" else "OK VENTA") + " #" + str(n_hoy) + "\n"
+                + contra + " | USD " + fmtd(usd_v) + " x $ " + fmt(tc_v) + "\n"
+                + sp2 + "$ " + fmt(ars_op) + "\n\n"
+                "POSICION DE CAJA\n"
+                "ARS: " + ("+" if pa>=0 else "-") + fmt(pa)
+            )
+            await u.message.reply_text(resp)
+            return
+
+        log.info("Sin match")
+
     except Exception as e:
         log.error("ERROR: " + str(e), exc_info=True)
         try:
