@@ -10,29 +10,33 @@ from openpyxl.utils import get_column_letter
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 DB = Path("/data/ops.db")
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
+# Las regex ahora estan ANCLADAS al inicio del mensaje (^\s*).
+# Si el mensaje no empieza con la palabra clave, el bot lo ignora.
+
 # compro/vendo nombre 1300 x 1365  (x con o sin espacios)
 OP_RE = re.compile(
-    r'\b(compro|compra|vendo|venta)\b\s+'
+    r'^\s*(compro|compra|vendo|venta)\b\s+'
     r'([\w][\w\s]*?)\s+'
     r'([\d][\d.,]*)'
-    r'\s*[xXaA@]\s*([\d][\d.,]*)',
+    r'\s*[xXaA@]\s*([\d][\d.,]*)\s*$',
     re.IGNORECASE
 )
 
 # compro/vendo [nombre] 1000000/1380  (pesos dividido TC)
 OP_RE2 = re.compile(
-    r'\b(compro|compra|vendo|venta)\b\s+'
+    r'^\s*(compro|compra|vendo|venta)\b\s+'
     r'(?:([a-zA-Z][\w ]*?)\s+)?'
-    r'([\d][\d.,]+)\s*/\s*([\d][\d.,]+)',
+    r'([\d][\d.,]+)\s*/\s*([\d][\d.,]+)\s*$',
     re.IGNORECASE
 )
 
 # salen/entran 500000 [nombre opcional]
 MOV_RE = re.compile(
-    r'\b(salen|entran)\b\s+([\d][\d.,]+)(?:\s+([a-zA-Z][\w\s]*))?',
+    r'^\s*(salen|entran)\b\s+([\d][\d.,]+)(?:\s+([a-zA-Z][\w\s]*?))?\s*$',
     re.IGNORECASE
 )
 
@@ -118,6 +122,9 @@ async def start(u: Update, _):
         "Movimientos de pesos:\n"
         "salen 500000\n"
         "entran 200000\n\n"
+        "IMPORTANTE: el bot SOLO toma mensajes que ARRANQUEN con\n"
+        "compro / compra / vendo / venta / salen / entran.\n"
+        "Cualquier otro mensaje (notas, instrucciones, direcciones, etc.) lo ignora.\n\n"
         "/posicion - ver posicion de caja\n"
         "/historial - operaciones de hoy\n"
         "/excel - bajar Excel\n"
@@ -297,8 +304,22 @@ async def excel_cmd(u: Update, _):
 async def mensaje(u: Update, ctx):
     try:
         text = u.message.text
+        if not text:
+            return
         sender = u.effective_user.first_name or u.effective_user.username or "?"
         log.info("MSG de " + sender + ": " + repr(text))
+
+        # FILTRO PRINCIPAL: si el mensaje no arranca con una palabra clave, lo ignoramos.
+        # Asi en el grupo se pueden mandar notas, direcciones, instrucciones, etc.
+        # sin que el bot se confunda y altere la posicion de caja.
+        primera_palabra = text.strip().split(None, 1)
+        if not primera_palabra:
+            return
+        keyword = primera_palabra[0].lower()
+        keywords_validas = ("compro", "compra", "vendo", "venta", "salen", "entran")
+        if keyword not in keywords_validas:
+            log.info("Ignorado (no arranca con palabra clave)")
+            return
 
         # Movimientos de pesos: salen/entran
         mov = MOV_RE.search(text)
@@ -368,14 +389,13 @@ async def mensaje(u: Update, ctx):
             await u.message.reply_text(resp)
             return
 
-        log.info("Sin match")
+        # Si arrancaba con palabra clave pero el formato no es valido,
+        # se queda callado (no responde con error) para no ensuciar el grupo.
+        log.info("Arranca con keyword pero formato no valido. Ignorado.")
 
     except Exception as e:
         log.error("ERROR: " + str(e), exc_info=True)
-        try:
-            await u.message.reply_text("Error: " + str(e))
-        except:
-            pass
+        # No respondemos errores en el grupo para no ensuciarlo.
 
 def main():
     setup()
@@ -388,7 +408,7 @@ def main():
     app.add_handler(CommandHandler("cancelar", cancelar_cmd))
     app.add_handler(CommandHandler("corregir", corregir_cmd))
     app.add_handler(CommandHandler("resetear", resetear_cmd))
-    app.add_handler(MessageHandler(filters.ALL, mensaje))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, mensaje))
     log.info("Bot iniciado")
     app.run_polling(drop_pending_updates=True)
 
