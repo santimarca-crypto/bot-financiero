@@ -41,17 +41,41 @@ MOV_RE = re.compile(
 )
 
 def num(s):
-    s = s.strip().replace(" ","")
-    if s.count(".") == 1 and len(s.split(".")[1]) == 3:
+    """Parsea números en formato argentino o americano:
+    1.300 → 1300 | 1,300 → 1300 | 1.300.000 → 1300000
+    1.300,50 → 1300.5 | 1,300.50 → 1300.5 | 1,5 → 1.5"""
+    s = s.strip().replace(" ", "")
+    dots   = s.count(".")
+    commas = s.count(",")
+    if dots > 0 and commas > 0:
+        # Hay ambos separadores: el que aparece último es el decimal
+        if s.rfind(",") > s.rfind("."):
+            # Europeo/Argentino: 1.300,50 → quitar puntos, coma→punto
+            s = s.replace(".", "").replace(",", ".")
+        else:
+            # Americano: 1,300.50 → quitar comas
+            s = s.replace(",", "")
+    elif dots > 1:
+        # Varios puntos = todos son miles: 1.300.000
         s = s.replace(".", "")
-    elif s.count(",") == 1 and len(s.split(",")[1]) == 3:
+    elif commas > 1:
+        # Varias comas = todas son miles: 1,300,000
         s = s.replace(",", "")
-    else:
-        s = s.replace(",", ".")
-    try:
-        return float(s)
-    except:
-        return float(s.replace(".","").replace(",",""))
+    elif dots == 1:
+        parte = s.split(".")[1]
+        if len(parte) == 3 and parte.isdigit():
+            # 1.300 → miles
+            s = s.replace(".", "")
+        # sino: 1.5 → decimal, no tocar
+    elif commas == 1:
+        parte = s.split(",")[1]
+        if len(parte) == 3 and parte.isdigit():
+            # 1,300 → miles
+            s = s.replace(",", "")
+        else:
+            # 1,5 → decimal
+            s = s.replace(",", ".")
+    return float(s)
 
 def fmt(n):
     return "{:,.0f}".format(abs(n)).replace(",",".")
@@ -110,6 +134,29 @@ def posicion():
                 pa += r["ars"]
     return pu, pa
 
+def promedio_tc():
+    """Calcula el TC promedio ponderado (por volumen USD) de compras y ventas."""
+    with db() as c:
+        ops = c.execute("SELECT tipo,usd,tc FROM ops WHERE tipo IN ('Compra','Venta')").fetchall()
+    def wavg(tipo):
+        vol = sum(r["usd"] for r in ops if r["tipo"] == tipo)
+        if vol == 0:
+            return 0.0
+        return sum(r["usd"] * r["tc"] for r in ops if r["tipo"] == tipo) / vol
+    return wavg("Compra"), wavg("Venta")
+
+def posicion_txt():
+    """Devuelve el bloque POSICION DE CAJA con TC ponderado según signo de ARS."""
+    _, pa = posicion()
+    avg_c, avg_v = promedio_tc()
+    sa = "+" if pa >= 0 else "-"
+    txt = "POSICION DE CAJA\nARS: " + sa + fmt(pa)
+    if pa >= 0 and avg_v > 0:
+        txt += "\nTC prom. venta:  $ " + fmt(avg_v)
+    elif pa < 0 and avg_c > 0:
+        txt += "\nTC prom. compra: $ " + fmt(avg_c)
+    return txt
+
 async def start(u: Update, _):
     await u.message.reply_text(
         "Bot USD/ARS activo\n\n"
@@ -135,30 +182,40 @@ async def start(u: Update, _):
     )
 
 async def pos_cmd(u: Update, _):
-    _, pa = posicion()
-    sa = "+" if pa >= 0 else "-"
-    await u.message.reply_text(
-        "POSICION DE CAJA\n"
-        "ARS: " + sa + fmt(pa)
-    )
+    await u.message.reply_text(posicion_txt())
 
 async def hist_cmd(u: Update, ctx):
-    hoy = datetime.now().strftime("%d/%m/%Y")
+    from datetime import timedelta
+    hoy  = datetime.now().strftime("%d/%m/%Y")
+    ayer = (datetime.now() - timedelta(days=1)).strftime("%d/%m/%Y")
     with db() as c:
-        rows = c.execute("SELECT * FROM ops WHERE fecha=? ORDER BY id", (hoy,)).fetchall()
-    if not rows:
-        await u.message.reply_text("No hay operaciones hoy.")
+        rows_hoy  = c.execute("SELECT * FROM ops WHERE fecha=? ORDER BY id", (hoy,)).fetchall()
+        rows_ayer = c.execute("SELECT * FROM ops WHERE fecha=? ORDER BY id", (ayer,)).fetchall()
+    if not rows_hoy and not rows_ayer:
+        await u.message.reply_text("No hay operaciones de hoy ni de ayer.")
         return
-    txt = "Operaciones de hoy " + hoy + ":\n\n"
-    for i, r in enumerate(rows, 1):
-        if r["tipo"] in ("Salida", "Entrada"):
-            nombre_h = " " + r["contra"] if r["contra"] != "-" else ""
-            txt += "#" + str(i) + " " + r["hora"][:5] + " | " + r["tipo"].upper() + nombre_h + " $" + fmt(r["ars"]) + "\n"
-        else:
-            e = "COMPRA" if r["tipo"]=="Compra" else "VENTA"
-            nombre_c = r["contra"] if r["contra"] != "-" else ""
-            txt += "#" + str(i) + " " + r["hora"][:5] + " | " + e + (" " + nombre_c if nombre_c else "") + " USD " + fmtd(r["usd"]) + " x " + fmt(r["tc"]) + "\n"
-    await u.message.reply_text(txt)
+
+    def fmt_bloque(rows):
+        txt = ""
+        for i, r in enumerate(rows, 1):
+            if r["tipo"] in ("Salida", "Entrada"):
+                nombre_h = " " + r["contra"] if r["contra"] != "-" else ""
+                txt += "#" + str(i) + " " + r["hora"][:5] + " | " + r["tipo"].upper() + nombre_h + " $" + fmt(r["ars"]) + "\n"
+            else:
+                e = "COMPRA" if r["tipo"] == "Compra" else "VENTA"
+                nombre_c = r["contra"] if r["contra"] != "-" else ""
+                txt += "#" + str(i) + " " + r["hora"][:5] + " | " + e + (" " + nombre_c if nombre_c else "") + " USD " + fmtd(r["usd"]) + " x " + fmt(r["tc"]) + "\n"
+        return txt
+
+    txt = ""
+    if rows_ayer:
+        txt += "— " + ayer + " —\n"
+        txt += fmt_bloque(rows_ayer) + "\n"
+    if rows_hoy:
+        txt += "— " + hoy + " —\n"
+        txt += fmt_bloque(rows_hoy)
+
+    await u.message.reply_text(txt.strip())
 
 async def inicio_cmd(u: Update, ctx):
     if len(ctx.args) < 1:
@@ -192,7 +249,6 @@ async def cancelar_cmd(u: Update, ctx):
         e = r["tipo"].upper()
         c.execute("DELETE FROM ops WHERE id=?", (op_id,))
         c.commit()
-    _, pa = posicion()
     if r["tipo"] in ("Salida", "Entrada"):
         detalle = e + " $" + fmt(r["ars"])
     else:
@@ -200,8 +256,7 @@ async def cancelar_cmd(u: Update, ctx):
     await u.message.reply_text(
         "CANCELADA operacion ID " + str(op_id) + "\n"
         + detalle + "\n\n"
-        "POSICION DE CAJA\n"
-        "ARS: " + ("+" if pa>=0 else "-") + fmt(pa)
+        + posicion_txt()
     )
 
 async def corregir_cmd(u: Update, ctx):
@@ -222,12 +277,10 @@ async def corregir_cmd(u: Update, ctx):
             op_id = rows[n - 1]["id"]
             c.execute("UPDATE ops SET usd=?, tc=?, ars=? WHERE id=?", (usd_v, tc_v, ars_v, op_id))
             c.commit()
-        _, pa = posicion()
         await u.message.reply_text(
             "CORREGIDA operacion #" + str(n) + "\n"
             "USD " + fmtd(usd_v) + " x $ " + fmt(tc_v) + "\n\n"
-            "POSICION DE CAJA\n"
-            "ARS: " + ("+" if pa>=0 else "-") + fmt(pa)
+            + posicion_txt()
         )
     except Exception as e:
         await u.message.reply_text("Error: " + str(e))
@@ -330,14 +383,12 @@ async def mensaje(u: Update, ctx):
             contra = nombre_s.strip().title() if nombre_s else "-"
             guardar(sender, tipo, contra, 0, 0, monto, text)
             n_hoy = num_op_hoy()
-            _, pa = posicion()
             sp = "-" if tipo == "Salida" else "+"
             nombre_txt = " " + contra if contra != "-" else ""
             resp = (
                 "OK " + tipo.upper() + " #" + str(n_hoy) + "\n"
                 + nombre_txt.strip() + (" | " if contra != "-" else "") + sp + "$ " + fmt(monto) + "\n\n"
-                "POSICION DE CAJA\n"
-                "ARS: " + ("+" if pa>=0 else "-") + fmt(pa)
+                + posicion_txt()
             )
             await u.message.reply_text(resp)
             return
@@ -353,15 +404,12 @@ async def mensaje(u: Update, ctx):
             tipo = "Compra" if kw.lower() in ("compro","compra") else "Venta"
             guardar(sender, tipo, contra, usd_v, tc_v, pesos, text)
             n_hoy = num_op_hoy()
-            _, pa = posicion()
-            sp = "+" if tipo == "Compra" else "-"
             sp2 = "-" if tipo == "Compra" else "+"
             resp = (
                 ("OK COMPRA" if tipo=="Compra" else "OK VENTA") + " #" + str(n_hoy) + "\n"
                 + contra + " | USD " + fmtd(usd_v) + " x $ " + fmt(tc_v) + "\n"
                 + sp2 + "$ " + fmt(pesos) + "\n\n"
-                "POSICION DE CAJA\n"
-                "ARS: " + ("+" if pa>=0 else "-") + fmt(pa)
+                + posicion_txt()
             )
             await u.message.reply_text(resp)
             return
@@ -376,15 +424,13 @@ async def mensaje(u: Update, ctx):
             tipo = "Compra" if kw.lower() in ("compro","compra") else "Venta"
             guardar(sender, tipo, contra, usd_v, tc_v, usd_v*tc_v, text)
             n_hoy = num_op_hoy()
-            _, pa = posicion()
             sp2 = "-" if tipo == "Compra" else "+"
             ars_op = usd_v * tc_v
             resp = (
                 ("OK COMPRA" if tipo=="Compra" else "OK VENTA") + " #" + str(n_hoy) + "\n"
                 + contra + " | USD " + fmtd(usd_v) + " x $ " + fmt(tc_v) + "\n"
                 + sp2 + "$ " + fmt(ars_op) + "\n\n"
-                "POSICION DE CAJA\n"
-                "ARS: " + ("+" if pa>=0 else "-") + fmt(pa)
+                + posicion_txt()
             )
             await u.message.reply_text(resp)
             return
