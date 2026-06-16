@@ -146,15 +146,15 @@ def promedio_tc():
     return wavg("Compra"), wavg("Venta")
 
 def posicion_txt():
-    """Devuelve el bloque POSICION DE CAJA con TC ponderado según signo de ARS."""
-    _, pa = posicion()
+    """Devuelve el bloque POSICION DE CAJA con TC ponderado según signo de USD."""
+    pu, pa = posicion()
     avg_c, avg_v = promedio_tc()
     sa = "+" if pa >= 0 else "-"
     txt = "POSICION DE CAJA\nARS: " + sa + fmt(pa)
-    if pa >= 0 and avg_v > 0:
-        txt += "\nTC prom. venta:  $ " + fmt(avg_v)
-    elif pa < 0 and avg_c > 0:
+    if pu > 0 and avg_c > 0:
         txt += "\nTC prom. compra: $ " + fmt(avg_c)
+    elif pu < 0 and avg_v > 0:
+        txt += "\nTC prom. venta:  $ " + fmt(avg_v)
     return txt
 
 async def start(u: Update, _):
